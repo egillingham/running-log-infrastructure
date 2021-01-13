@@ -10,35 +10,35 @@ class RunningLogInfrastructureStack(core.Stack):
     def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
         super().__init__(scope, id, **kwargs)
 
-        vpc = ec2.Vpc(self, "RunningLogVPC", max_azs=3)  # default is all AZs in region
+        vpc = ec2.Vpc(self, "RunningLogVPC",
+                      max_azs=2,
+                      nat_gateways=0,  # CREATES ONE NAT GATEWAY ($1 a day) PER AZ BY DEFAULT! WTH
+                      subnet_configuration=[
+                          ec2.SubnetConfiguration(
+                              name="Public",
+                              subnet_type=ec2.SubnetType.PUBLIC
+                          )]
+                      )
 
-        sg = ec2.SecurityGroup(self, "RunningLogAuroraSG",
+        sg = ec2.SecurityGroup(self, "RunningLogMySQLSG",
                                vpc=vpc,
                                allow_all_outbound=True,
-                               description="Aurora Security Group"
+                               description="MySQL Security Group"
                                )
-        sg.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(3306), "Aurora")
+        sg.add_ingress_rule(ec2.Peer.any_ipv4(), ec2.Port.tcp(3306), "MySQL")
 
-        rds_cluster_params = rds.ClusterParameterGroup.from_parameter_group_name(self, 'ParameterGroup',
-                                                                                 "default.aurora-mysql5.7")
-        db = rds.DatabaseCluster(self, "RunningLogMySQL",
-                                 cluster_identifier="running-log",
-                                 default_database_name="db",
-                                 engine=rds.DatabaseClusterEngine.AURORA_MYSQL,
-                                 engine_version="5.7.mysql_aurora.2.07.2",
-                                 instance_props=rds.InstanceProps(
-                                     instance_type=ec2.InstanceType.of(ec2.InstanceClass.BURSTABLE3,
-                                                                       ec2.InstanceSize.SMALL),
-                                     vpc_subnets=ec2.SubnetSelection(
-                                         subnet_type=ec2.SubnetType.PUBLIC
-                                     ),
-                                     security_group=sg,
-                                     vpc=vpc
-                                 ),
-                                 instances=1,
-                                 master_user=rds.Login(username="erin"),
-                                 parameter_group=rds_cluster_params
-                                 )
+        db = rds.DatabaseInstance(self, "RunningLogMysql",
+                                  engine=rds.DatabaseInstanceEngine.MYSQL,
+                                  engine_version="5.7.28",
+                                  instance_class=ec2.InstanceType('t3.micro'),
+                                  vpc=vpc,
+                                  vpc_placement=ec2.SubnetSelection(
+                                      subnet_type=ec2.SubnetType.PUBLIC
+                                  ),
+                                  security_groups=[sg],
+                                  master_username="erin",
+                                  deletion_protection=False
+                                  )
 
         cluster = ecs.Cluster(self, "RunningLogCluster", vpc=vpc, cluster_name="running-log")
 
@@ -58,9 +58,10 @@ class RunningLogInfrastructureStack(core.Stack):
 
         ecs_patterns.ApplicationLoadBalancedFargateService(self, "RunningLogService",
                                                            cluster=cluster,
-                                                           cpu=512,
-                                                           desired_count=1,
+                                                           cpu=256,
+                                                           desired_count=2,
                                                            task_image_options=alb_task_options,
-                                                           memory_limit_mib=2048,
-                                                           public_load_balancer=True
+                                                           memory_limit_mib=1024,
+                                                           public_load_balancer=True,
+                                                           assign_public_ip=True
                                                            )
